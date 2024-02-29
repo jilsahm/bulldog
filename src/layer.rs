@@ -1,7 +1,7 @@
 use std::{collections::HashMap, sync::{Mutex, RwLock}, time::SystemTime};
 
 use tokio::{runtime::{Builder, Runtime}, sync::mpsc::Sender};
-use tracing::{field::Visit, span::{self, Id}, Subscriber};
+use tracing::{field::Visit, span, Subscriber};
 use tracing_subscriber::Layer;
 
 use crate::{client::DogClient, config::DogConfig, shipper::DogShipper, span::DogSpan};
@@ -15,6 +15,7 @@ pub struct DogTracingLayer {
 
 struct V {
     dd_trace_id: u64,
+    dd_parent_id: Option<u64>,
 }
 
 impl V {
@@ -22,6 +23,7 @@ impl V {
     pub fn new() -> Self {
         Self {
             dd_trace_id: rand::random(),
+            dd_parent_id: None,
         }
     }
 }
@@ -30,6 +32,8 @@ impl Visit for V {
     fn record_u64(&mut self, field: &tracing::field::Field, value: u64) {
         if field.name() == "dd_trace_id" {
             self.dd_trace_id = value;
+        } else if field.name() == "dd_parent_id" {
+            self.dd_parent_id = Some(value);
         }
     }
 
@@ -65,28 +69,28 @@ impl DogTracingLayer {
 impl <S: Subscriber> Layer<S> for DogTracingLayer {
 
     fn on_new_span(&self, attributes: &span::Attributes<'_>, id: &span::Id, _ctx: tracing_subscriber::layer::Context<'_, S>) {
-        let trace_id = match attributes.parent() {
+        let (trace_id, parent_id) = match attributes.parent() {
             None => {
                 let mut visitor = V::new();
                 attributes.values().record(&mut visitor);
-                visitor.dd_trace_id
+                (visitor.dd_trace_id, visitor.dd_parent_id)
             },
             Some(parent) => {
                 let read_lock = self.spans.read().expect("valid read lock for spans");
                 if let Some(mtx) = read_lock.get(parent) {
                     let lock = mtx.lock().expect("valid write lock on span");
-                    lock.trace_id
+                    (lock.trace_id, lock.parent_id)
                 } else {
                     let mut visitor = V::new();
                     attributes.values().record(&mut visitor);
-                    visitor.dd_trace_id
+                    (visitor.dd_trace_id, visitor.dd_parent_id)
                 }            
             },
         };
 
         let dog_span = DogSpan::new(
             attributes.metadata().name(),
-            attributes.parent().map(Id::into_u64),
+            parent_id,
             "", // todo: make resource field settable
             &self.config.service,
             id.into_u64(),
