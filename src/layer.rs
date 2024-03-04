@@ -107,7 +107,9 @@ impl <S: Subscriber> Layer<S> for DogTracingLayer {
         let read_lock = self.spans.read().expect("valid read lock for spans");
         if let Some(mtx) = read_lock.get(id) {
             let mut write_lock = mtx.lock().expect("valid write lock on span");
-            write_lock.start = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).unwrap_or_default().as_nanos() as u64;
+            if write_lock.start == 0 {
+                write_lock.start = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).unwrap_or_default().as_nanos() as u64;
+            }
         }
     }
 
